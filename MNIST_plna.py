@@ -145,13 +145,14 @@ def new_images(model):
     return x.cpu()
 
 # --- Hyperparameters ---
-T = 1000                # Diffusion steps
+T = 100                # Diffusion steps
 beta_start = 1e-5       # Noise variance start
-beta_end = 1e-2         # Final noise variance
+# beta_end = 7.5e-3         # Final noise variance
+beta_end = 5e-3
 image_size = 28
-batch_size = 1
-learning_rate = 1e-3
-epochs = 350
+batch_size = 10
+learning_rate = 1
+epochs = 1000
 num_samples = 5
 losses = []
 
@@ -164,68 +165,51 @@ alpha_cumulative = torch.cumprod(alpha, dim=0)              # Cumulative proport
 dataset = images_to_list('dataset_ones').to(device)
 data_loaded = DataLoader(dataset, batch_size, shuffle=True)
 
-# --- Diffusion test loop ---
+# # --- Diffusion test loop ---
 # sample = dataset[0].unsqueeze(0).to(device)
-
 # fig, axes = plt.subplots(1, 10, figsize=(6, 15))
 # for i in range(10):    
-#     sample_diff, noise = forward_diffusion(sample, i * 99)
-  
-#     sample_diff = sample_diff.squeeze().cpu().numpy()
-#     ax = axes[i]  # Select the i-th axis
-#     ax.imshow(sample_diff, cmap='gray')
-#     ax.axis('off')  # Remove axis for better visualization
-    
+#      sample_diff, noise = forward_diffusion(sample, i * 9)
+#      sample_diff = sample_diff.squeeze().cpu().numpy()
+#      ax = axes[i]
+#      ax.imshow(sample_diff, cmap='gray')
+#      ax.axis('off')
+
+# # Adjust layout to avoid overlap
+# plt.tight_layout()
+# plt.show() 
+
+# --- Model init ---
+model = Net().to(device)
+optimizer = optim.Adam(model.parameters(), learning_rate)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 1000, gamma = 0.1)
+loss_fn = nn.MSELoss() 
+
 # --- Main loop ---
 for epoch in range(epochs):
     loss_c = 0
     
     for batch in data_loaded:
-    
         batch_size_actual = batch.shape[0]
         t = torch.randint(0, T, (batch_size_actual,), device=device)
         xt, noise = forward_diffusion(batch, t)
         
-        
-# Adjust layout to avoid overlap
-plt.tight_layout()
-plt.show()
-
-# --- Learning prep ---
-model = Net().to(device)
-optimizer = optim.Adam(model.parameters(), learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.9)
-loss_fn = nn.MSELoss()    
-
-# --- Training Loop ---
-for epoch in range(epochs):
-    loss_c = 0
-    num_batches = 0
-    
-    for images, _ in dataset_one:
-        images = images.to(device)
-        
-        batch_size_actual = images.shape[0]
-        t = torch.randint(0, T, (batch_size_actual,), device=device)
-        xt, noise = forward_diffusion(images, t)
-        noise = noise.unsqueeze(1)
-        predicted_noise = model(xt, t)
-        loss = loss_fn(predicted_noise, noise)
+        noise_pred = model(xt, t)
+        loss = loss_fn(noise_pred, noise)
+        loss_c += loss
         
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         
-        loss_c += loss
-        num_batches += 1
-        
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
-    loss_c /= num_batches
+    
+    loss_c /= batch_size
     losses.append(loss_c.item())
     print(f"Epoch {epoch+1}: Loss = {loss_c.item():.6f}, Learning Rate = {current_lr:.6e}")
     
-    if (epoch + 1) % 10 == 0:
+    if (epoch + 1) % 100 == 0:
 
         # Generate and display new images
         samples = new_images(model)
@@ -234,18 +218,17 @@ for epoch in range(epochs):
             ax.imshow(samples[i].squeeze(), cmap="gray")
             ax.axis("off")
         plt.show()
-
-    
+     
 torch.save(model.state_dict(), "diffusion_model.pth")
 print("Model saved successfully.")
 
 # --- Plot sampled images ---
-samples = new_images(model)
-fig, axes = plt.subplots(1, 5, figsize=(10, 2))
-for i, ax in enumerate(axes):
-    ax.imshow(samples[i].squeeze(), cmap="gray")
-    ax.axis("off")
-plt.show()
+# samples = new_images(model)
+# fig, axes = plt.subplots(1, 5, figsize=(10, 2))
+# for i, ax in enumerate(axes):
+#     ax.imshow(samples[i].squeeze(), cmap="gray")
+#     ax.axis("off")
+# plt.show()
 
 # --- Plot loss curve ---
 plt.plot(losses, label="Total loss")
