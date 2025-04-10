@@ -5,10 +5,10 @@ import torch.optim as optim
 import torchvision.transforms as transforms 
 import torch.nn.init as init
 import matplotlib.pyplot as plt
-import random
 import os
 from PIL import Image
 from torch.utils.data import Dataset
+from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -52,12 +52,9 @@ def images_to_list(image_folder):
 
     # Convert list of arrays to a 4D tensor
     image_tensor = torch.tensor(np.array(image_list)).unsqueeze(1).float()
+    dataset = TensorDataset(image_tensor)
 
-    return image_tensor
-
-    print('Dataset created')
-    
-    return(dataset)
+    return dataset, image_tensor
 
 # --- Architecture ---
 class Net(nn.Module):
@@ -68,13 +65,16 @@ class Net(nn.Module):
         self.enc1 = nn.Sequential(nn.Conv2d(1, 32, kernel_size=3, padding=1), nn.ReLU())
         self.enc2 = nn.Sequential(nn.Conv2d(32, 64, kernel_size=3, padding=1), nn.ReLU())
         self.enc3 = nn.Sequential(nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.ReLU())
+        self.enc4 = nn.Sequential(nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.ReLU())
         
-        self.bottleneck1 = nn.Sequential(nn.Conv2d(192, 128, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck1 = nn.Sequential(nn.Conv2d(320, 320, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck2 = nn.Sequential(nn.Conv2d(320, 256, kernel_size=3, padding=1), nn.ReLU())
         
         # Decoder - spatial back to original
+        self.dec4 = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU())
         self.dec3 = nn.Sequential(nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
         self.dec2 = nn.Sequential(nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ReLU())
-        self.dec1 = nn.Sequential(nn.Conv2d(32, 1, kernel_size=3, padding=1), nn.ReLU())
+        self.dec1 = nn.Sequential(nn.Conv2d(32, 1, kernel_size=3, padding=1))
         
         # Time embedding
         self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 64))
@@ -82,35 +82,32 @@ class Net(nn.Module):
         self.apply(self._init_weights)
         
     def _init_weights(self, layer):
-        if isinstance(layer, nn.Conv2d):
+        if isinstance(layer, (nn.Conv2d, nn.Linear)):
             init.xavier_uniform_(layer.weight)
-            if layer.bias is not None:
-                init.zeros_(layer.bias)
-        elif isinstance(layer, nn.Linear):
-            init.xavier_uniform_(layer.weight)
-            if layer.bias is not None:
-                init.zeros_(layer.bias)
                 
     def forward(self, x, t):
         e1 = self.enc1(x)
         e2 = self.enc2(e1)
         e3 = self.enc3(e2)
+        e4 = self.enc4(e3)
         
         embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 64, 1, 1)
-        embed = embed.expand(-1, -1, e3.shape[2], e3.shape[3])
+        embed = embed.expand(-1, -1, e4.shape[2], e4.shape[3])
         
-        e3 = torch.cat([e3, embed], dim=1)
-        e3 = nn.LayerNorm(e3.shape[1:], elementwise_affine=False)(e3)
+        e4 = torch.cat([e4, embed], dim=1)
+        # e3 = nn.LayerNorm(e3.shape[1:], elementwise_affine=False)(e3)
         
-        b1 = self.bottleneck1(e3)
+        b1 = self.bottleneck1(e4)
+        b2 = self.bottleneck2(b1)
         
-        d3 = self.dec3(b1)
+        d4 = self.dec4(b2)
+        d3 = self.dec3(d4) + e2     # Skip con
         d2 = self.dec2(d3) + e1     # Skip con
         d1 = self.dec1(d2)
         
         return d1
 
-# --- Forward Diffusion Process ---
+# --- Forward Diffusion Process --- CHECKED
 def forward_diffusion(image, t):
     noise = torch.randn_like(image).to(device)
 
@@ -140,19 +137,18 @@ def new_images(model):
                 noise = torch.zeros_like(x).to(device)
 
             # Reverse diffusion step
-            x = (1 / alpha_t.sqrt()) * (x - beta_t * noise_pred / (1 - alpha_c).sqrt()) + noise * beta_t.sqrt()
+            x = (1 / torch.sqrt(alpha_t)) * (x - (beta_t * noise_pred / torch.sqrt(1 - alpha_c))) + noise * torch.sqrt(beta_t)
 
     return x.cpu()
 
 # --- Hyperparameters ---
-T = 100                # Diffusion steps
-beta_start = 1e-5       # Noise variance start
-# beta_end = 7.5e-3         # Final noise variance
-beta_end = 5e-3
+T = 2000                # Diffusion steps
+beta_start = 1e-5
+beta_end = 7.5e-3
 image_size = 28
-batch_size = 10
-learning_rate = 1
-epochs = 1000
+batch_size = 25
+learning_rate = 1e-3
+epochs = 2000
 num_samples = 5
 losses = []
 
@@ -162,27 +158,26 @@ alpha = 1 - beta                                            # Proportion of orig
 alpha_cumulative = torch.cumprod(alpha, dim=0)              # Cumulative proportion of orig image
 
 # --- Import dataset as list of arrays ---
-dataset = images_to_list('dataset_ones').to(device)
+dataset, image_tensor = images_to_list('dataset_ones')
 data_loaded = DataLoader(dataset, batch_size, shuffle=True)
 
-# # --- Diffusion test loop ---
-# sample = dataset[0].unsqueeze(0).to(device)
-# fig, axes = plt.subplots(1, 10, figsize=(6, 15))
-# for i in range(10):    
-#      sample_diff, noise = forward_diffusion(sample, i * 9)
-#      sample_diff = sample_diff.squeeze().cpu().numpy()
-#      ax = axes[i]
-#      ax.imshow(sample_diff, cmap='gray')
-#      ax.axis('off')
-
-# # Adjust layout to avoid overlap
-# plt.tight_layout()
-# plt.show() 
+# --- Diffusion test loop ---
+sample = image_tensor[0].unsqueeze(0).to(device)
+fig, axes = plt.subplots(1, 10, figsize=(6, 15))
+for i in range(10): 
+     sample_diff, noise = forward_diffusion(sample, (((i + 1) * T - 1) // 10))
+     sample_diff = sample_diff.squeeze().cpu().numpy()
+     ax = axes[i]
+     ax.imshow(sample_diff, cmap='gray')
+     ax.axis('off')
+# Adjust layout to avoid overlap
+plt.tight_layout()
+plt.show() 
 
 # --- Model init ---
 model = Net().to(device)
 optimizer = optim.Adam(model.parameters(), learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 1000, gamma = 0.1)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 250, gamma = 0.25)
 loss_fn = nn.MSELoss() 
 
 # --- Main loop ---
@@ -190,6 +185,7 @@ for epoch in range(epochs):
     loss_c = 0
     
     for batch in data_loaded:
+        batch = batch[0].to(device)
         batch_size_actual = batch.shape[0]
         t = torch.randint(0, T, (batch_size_actual,), device=device)
         xt, noise = forward_diffusion(batch, t)
@@ -209,7 +205,7 @@ for epoch in range(epochs):
     losses.append(loss_c.item())
     print(f"Epoch {epoch+1}: Loss = {loss_c.item():.6f}, Learning Rate = {current_lr:.6e}")
     
-    if (epoch + 1) % 100 == 0:
+    if (epoch + 1) % 250 == 0:
 
         # Generate and display new images
         samples = new_images(model)
@@ -218,7 +214,36 @@ for epoch in range(epochs):
             ax.imshow(samples[i].squeeze(), cmap="gray")
             ax.axis("off")
         plt.show()
-     
+    
+        # --- Combined Gradient Histograms with 3 Columns ---
+        num_params = len(list(model.parameters()))
+        num_cols = 6
+        num_rows = 4  # Calculate number of rows to fit all histograms
+        
+        fig, axes = plt.subplots(num_rows, num_cols, figsize=(24, 16))
+        axes = axes.flatten()  # Flatten the axes array to iterate easily
+        
+        # Loop through parameters and plot their gradients
+        for i, (name, param) in enumerate(model.named_parameters()):
+            if param.grad is not None:
+                # Plot gradient histogram in the corresponding subplot
+                axes[i].hist(param.grad.cpu().numpy().flatten(), bins=100)
+                axes[i].set_title(f'Gradient Histogram - {name}')
+                axes[i].set_xlabel('Gradient Value')
+                axes[i].set_ylabel('Frequency')
+            else:
+                # If the parameter does not have gradients, make it blank
+                axes[i].axis('off')
+
+        # Remove any extra subplots if there are fewer parameters
+        for j in range(i + 1, len(axes)):
+            axes[j].axis('off')
+        
+        fig.suptitle(f'Loss: {loss_c:.2e}, Epoch: {epoch + 1}, LR: {learning_rate:.2e}, CLR: {current_lr:.2e}', fontsize=30)
+        
+        plt.tight_layout()  # Adjust layout for better spacing
+        plt.show()
+        
 torch.save(model.state_dict(), "diffusion_model.pth")
 print("Model saved successfully.")
 
