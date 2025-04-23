@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 from torch import nn
 from PIL import Image
 import torchvision.transforms as transforms
+import os
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -28,15 +31,15 @@ class Net(nn.Module):
         self.enc3 = nn.Sequential(nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.ReLU())
         self.enc4 = nn.Sequential(nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.ReLU())
         
-        self.bottleneck1 = nn.Sequential(nn.Conv2d(384, 384, kernel_size=3, padding=1), nn.ReLU())
-        self.bottleneck2 = nn.Sequential(nn.Conv2d(384, 256, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck1 = nn.Sequential(nn.Conv2d(320, 320, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck2 = nn.Sequential(nn.Conv2d(320, 256, kernel_size=3, padding=1), nn.ReLU())
         
         self.dec4 = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU())
         self.dec3 = nn.Sequential(nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
         self.dec2 = nn.Sequential(nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ReLU())
         self.dec1 = nn.Sequential(nn.Conv2d(32, 1, kernel_size=3, padding=1))
         
-        self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 128))
+        self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 64))
         
     def forward(self, x, t):
         e1 = self.enc1(x)
@@ -44,7 +47,7 @@ class Net(nn.Module):
         e3 = self.enc3(e2)
         e4 = self.enc4(e3)
 
-        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 128, 1, 1)
+        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 64, 1, 1)
         embed = embed.expand(-1, -1, e4.shape[2], e4.shape[3])
         e4 = torch.cat([e4, embed], dim=1)
 
@@ -58,7 +61,7 @@ class Net(nn.Module):
         return d1
 
 model = Net().to(device)
-model.load_state_dict(torch.load("diffusion_model.pth"))
+model.load_state_dict(torch.load("diffusion_model_1.pth"))
 model.eval()
 print("Model loaded.")
 
