@@ -93,130 +93,90 @@ def new_images(model):
 
 # --- Encoder block ---
 class Encoder_block(nn.Module):
-    def __init__(self, input_dimension, output_dimension):
+    def __init__(self, input_dim, output_dim):
         super().__init__()
-
-        self.encoder = nn.Sequential(nn.Conv2d(input_dimension, input_dimension, kernel_size=3, padding=1), nn.ReLU(),
-                                     nn.Conv2d(input_dimension, output_dimension, kernel_size=3, stride=2, padding=1), nn.ReLU())
+        self.output_dim = output_dim
+        self.encoder = nn.Sequential(nn.Conv2d(input_dim, input_dim, kernel_size=3, padding=1), nn.ReLU(),
+                                     nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=2, padding=1), nn.ReLU())
         
-        self.time_embed = nn.Sequential(nn.Linear(1, output_dimension // 8), nn.ReLU(),
-                                        nn.Linear(output_dimension // 8, output_dimension // 4))
+        self.time_embed = nn.Sequential(nn.Linear(1, output_dim // 2), nn.ReLU(),
+                                        nn.Linear(output_dim // 2, output_dim))
         
     def forward(self, x, t):
         x = self.encoder(x)
-        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, self.output_dimension // 4, 1, 1)
-        embed = embed.expand(-1, 1, x.shape[2], x.shape[3])
-        x = torch.cat([x, embed], dim=1)
+        t_proj = self.time_embed(t.float()).view(-1, self.output_dim, 1, 1)
+        x = x + t_proj
         
         return x
 
 # --- Bottleneck block ---
 class Bottleneck_block(nn.Module):
-    def __init__(self, input_dimension):
+    def __init__(self, input_dim):
         super().__init__()
-        self.bottleneck = nn.Sequential(nn.Conv2d(input_dimension, input_dimension, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck = nn.Sequential(nn.Conv2d(input_dim, input_dim, kernel_size=3, padding=1), nn.ReLU())
         
-        self.time_embed = nn.Sequential(nn.Linear(1, input_dimension // 2), nn.ReLU(),
-                                        nn.Linear(input_dimension // 2, input_dimension))
+        self.time_embed = nn.Sequential(nn.Linear(1, input_dim // 2), nn.ReLU(),
+                                        nn.Linear(input_dim // 2, input_dim))
     def forward(self, x, t):
         x = self.bottleneck(x)
-        embed = self.time_embe.unsqueeze-(1).unsqueeze(-1)
-        x = torch.cat([x, embed], dim=1)
+        t_proj = self.time_embed(t.float()).view(-1, self.input_dim, 1, 1)
+        x = x + t_proj
         
         return x
 
 # --- Decoder block ---
 class Decoder_block(nn.Module):
-    def __init__(self, input_dimension, output_dimension):
+    def __init__(self, input_dim, output_dim):
         super().__init__()
-        self.decoder = nn.Sequential(nn.ConvTranspose2d(input_dimension, input_dimension, kernel_size=3, stride=2, padding=1), nn.ReLU(),
-                                     nn.Conv2d(input_dimension, output_dimension, kernel_size=3, padding=1), nn.ReLU())
+        self.output_dim = output_dim
+        self.decoder = nn.Sequential(nn.ConvTranspose2d(input_dim, input_dim, kernel_size=3, stride=2, padding=1, output_padding=1), nn.ReLU(),
+                                     nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1), nn.ReLU())
         
-        self.time_embed = nn.Sequential(nn.Linear(1, output_dimension // 8), nn.ReLU(),
-                                        nn.Linear(output_dimension // 8, output_dimension // 4))
+        self.time_embed = nn.Sequential(nn.Linear(1, output_dim // 2), nn.ReLU(),
+                                        nn.Linear(output_dim // 2, output_dim))
         
     def forward(self, x, t):
         x = self.decoder(x)
-        if self.output_dimension >> 1:
-            embed = self.time_embed(t.float().unsqueeze(1)).view(-1, self.output_dimension // 4, 1, 1)
-            embed = embed.expand(-1, 1, x.shape[2], x.shape[3])
-            x = torch.cat([x, embed], dim=1)
-            
+        if self.output_dim > 1:
+            t_proj = self.time_embed(t.float()).view(-1, self.output_dim, 1, 1)
+            x = x + t_proj
+        
         return x
 
-# --- Architecture --- NEW
+# --- Architecture ---
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
         
         self.enc1 = Encoder_block(1, 32)
-        self.enc2 = Encoder_block(40, 64)
+        self.enc2 = Encoder_block(32, 64)
         
-        self.bottle1 = Bottleneck_block(80)
-        self.bottle2 = Bottleneck_block(80)
+        self.bottle1 = Bottleneck_block(64)
+        self.bottle2 = Bottleneck_block(64)
         
-        self.dec1 = Decoder_block(64, 32)
-        self.dec2 = Decoder_block(32, 1)
+        self.dec2 = Decoder_block(64, 32)
+        self.dec1 = Decoder_block(32, 1)
         
-        
+        self.apply(self.init_weights)
     
-# --- Architecture --- ORIGINAL
-class Net(nn.Module):
-    def __init__(self):
-        super().__init__()
-        
-        # Encoder - spatial resolution reduction
-        self.enc1 = nn.Sequential(nn.Conv2d(1, 32, kernel_size=3, padding=1), nn.ReLU())
-        self.enc2 = nn.Sequential(nn.Conv2d(32, 64, kernel_size=3, padding=1), nn.ReLU())
-        self.enc3 = nn.Sequential(nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.ReLU())
-        self.enc4 = nn.Sequential(nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.ReLU())
-        self.enc5 = nn.Sequential(nn.Conv2d(256, 512, kernel_size=3, padding=1), nn.ReLU())
-        
-        self.bottleneck1 = nn.Sequential(nn.Conv2d(640, 640, kernel_size=3, padding=1), nn.ReLU())
-        self.bottleneck2 = nn.Sequential(nn.Conv2d(640, 640, kernel_size=3, padding=1), nn.ReLU())
-        self.bottleneck3 = nn.Sequential(nn.Conv2d(640, 512, kernel_size=3, padding=1), nn.ReLU())
-        
-        # Decoder - spatial resolution back to original
-        self.dec5 = nn.Sequential(nn.Conv2d(512, 256, kernel_size=3, padding=1), nn.ReLU())
-        self.dec4 = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU())
-        self.dec3 = nn.Sequential(nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
-        self.dec2 = nn.Sequential(nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ReLU())
-        self.dec1 = nn.Sequential(nn.Conv2d(32, 1, kernel_size=3, padding=1))
-        
-        # Time embedding
-        self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 128))
-        
-        self.apply(self._init_weights)
-        
-    def _init_weights(self, layer):
-        if isinstance(layer, (nn.Conv2d, nn.Linear)):
+    def init_weights(self, layer):
+        if isinstance(layer, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)):
             init.xavier_uniform_(layer.weight)
-                
+    
     def forward(self, x, t):
-        e1 = self.enc1(x)
-        e2 = self.enc2(e1)
-        e3 = self.enc3(e2)
-        e4 = self.enc4(e3)
-        e5 = self.enc5(e4)
+        e1 = self.enc1(x, t)
+        e2 = self.enc2(e1, t)
         
-        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 128, 1, 1)
-        embed = embed.expand(-1, -1, e5.shape[2], e5.shape[3])        
-        e5 = torch.cat([e5, embed], dim=1)
+        b1 = self.bottle1(e2, t)
+        b2 = self.bottle2(b1)
         
-        b1 = self.bottleneck1(e5)
-        b2 = self.bottleneck2(b1)
-        b3 = self.bottleneck3(b2)
-        
-        d5 = self.dec5(b3)
-        d4 = self.dec4(d5)
-        d3 = self.dec3(d4) + e2     # Skip con
-        d2 = self.dec2(d3) + e1     # Skip con
+        d2 = self.dec2(b2) + e1
         d1 = self.dec1(d2)
         
         return d1
-
+    
 # --- Hyperparameters ---
-T = 2000                # Diffusion steps
+T = 2000
 beta_start = 1e-5
 beta_end = 2e-2
 image_size = 28
@@ -261,7 +221,7 @@ for epoch in range(epochs):
     for batch in data_loaded:
         batch = batch[0].to(device)
         batch_size_actual = batch.shape[0]
-        t = torch.randint(0, T, (batch_size_actual,), device=device)
+        t = torch.randint(0, T, (batch_size_actual, 1), device=device)
         xt, noise = forward_diffusion(batch, t)
         
         noise_pred = model(xt, t)
