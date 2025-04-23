@@ -28,15 +28,15 @@ class Net(nn.Module):
         self.enc3 = nn.Sequential(nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.ReLU())
         self.enc4 = nn.Sequential(nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.ReLU())
         
-        self.bottleneck1 = nn.Sequential(nn.Conv2d(320, 320, kernel_size=3, padding=1), nn.ReLU())
-        self.bottleneck2 = nn.Sequential(nn.Conv2d(320, 256, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck1 = nn.Sequential(nn.Conv2d(384, 384, kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck2 = nn.Sequential(nn.Conv2d(384, 256, kernel_size=3, padding=1), nn.ReLU())
         
         self.dec4 = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.ReLU())
         self.dec3 = nn.Sequential(nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ReLU())
         self.dec2 = nn.Sequential(nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ReLU())
         self.dec1 = nn.Sequential(nn.Conv2d(32, 1, kernel_size=3, padding=1))
         
-        self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 64))
+        self.time_embed = nn.Sequential(nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, 128))
         
     def forward(self, x, t):
         e1 = self.enc1(x)
@@ -44,7 +44,7 @@ class Net(nn.Module):
         e3 = self.enc3(e2)
         e4 = self.enc4(e3)
 
-        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 64, 1, 1)
+        embed = self.time_embed(t.float().unsqueeze(1)).view(-1, 128, 1, 1)
         embed = embed.expand(-1, -1, e4.shape[2], e4.shape[3])
         e4 = torch.cat([e4, embed], dim=1)
 
@@ -79,30 +79,30 @@ def forward_diffusion(image, t):
 steps = [int(p * T) for p in [0.1, 0.25, 0.5, 0.75, 0.95]]
 fig, axs = plt.subplots(len(steps), 3, figsize=(10, 12))
 
-# --- Reversing in one jump ---
-for i, t in enumerate(steps):
-    t_tensor = torch.tensor([t], device=device)
-    xt, true_noise = forward_diffusion(img, t_tensor)
+# # --- Reversing in one jump ---
+# for i, t in enumerate(steps):
+#     t_tensor = torch.tensor([t], device=device)
+#     xt, true_noise = forward_diffusion(img, t_tensor)
     
-    with torch.no_grad():
-        predicted_noise = model(xt, t_tensor)
+#     with torch.no_grad():
+#         predicted_noise = model(xt, t_tensor)
 
-    denoised = (xt - predicted_noise * (1 - alpha_cumulative[t]).sqrt().view(-1, 1, 1, 1)) / alpha_cumulative[t].sqrt().view(-1, 1, 1, 1)
+#     denoised = (xt - predicted_noise * (1 - alpha_cumulative[t]).sqrt().view(-1, 1, 1, 1)) / alpha_cumulative[t].sqrt().view(-1, 1, 1, 1)
 
-    axs[i, 0].imshow(img.squeeze().cpu(), cmap='gray')
-    axs[i, 0].set_title(f"Original")
+#     axs[i, 0].imshow(img.squeeze().cpu(), cmap='gray')
+#     axs[i, 0].set_title(f"Original")
 
-    axs[i, 1].imshow(xt.squeeze().cpu(), cmap='gray')
-    axs[i, 1].set_title(f"Noisy t={t}")
+#     axs[i, 1].imshow(xt.squeeze().cpu(), cmap='gray')
+#     axs[i, 1].set_title(f"Noisy t={t}")
 
-    axs[i, 2].imshow(denoised.squeeze().clamp(-1, 1).cpu(), cmap='gray')
-    axs[i, 2].set_title(f"Denoised")
+#     axs[i, 2].imshow(denoised.squeeze().clamp(-1, 1).cpu(), cmap='gray')
+#     axs[i, 2].set_title(f"Denoised")
 
-    for j in range(3):
-        axs[i, j].axis('off')
+#     for j in range(3):
+#         axs[i, j].axis('off')
 
-plt.tight_layout()
-plt.show()
+# plt.tight_layout()
+# plt.show()
 
 # --- Reversing step-by-step ---
 for i, t in enumerate(steps):
@@ -129,7 +129,7 @@ for i, t in enumerate(steps):
     axs[i, 0].set_title(f"Original")
 
     axs[i, 1].imshow(xt.squeeze().cpu(), cmap='gray')
-    axs[i, 1].set_title(f"Noisy t={t}")
+    axs[i, 1].set_title(f"Noisy t={t}, alpha_c={alpha_cumulative[t].item():.4f}")
 
     axs[i, 2].imshow(denoised.squeeze().clamp(-1, 1).cpu(), cmap='gray')
     axs[i, 2].set_title(f"Step-by-step Denoised")
