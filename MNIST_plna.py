@@ -16,7 +16,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # --- GPU check ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}") 
+print(f"Using device: {device}")
 
 def images_to_list(image_folder):
     # Custom Dataset class to load images and convert them to arrays
@@ -73,8 +73,7 @@ def new_images(model):
     for t in reversed(range(T)):
         with torch.no_grad():
             t_tensor = torch.full((num_samples, 1), t, device=device)
-            model.set_time(t_tensor)
-            noise_pred = model(x)
+            noise_pred = model(x, t_tensor)
             
             beta_t = beta[t]
             alpha_t = alpha[t]
@@ -112,8 +111,7 @@ def test_noise(num_samples=1, image_path='dataset_ones/1.png'):
         for rev_t in reversed(range(t + 1)):
             with torch.no_grad():
                 t_rev = torch.full((num_samples, 1), rev_t, device=device)
-                model.set_time(t_rev)
-                noise_pred = model(x)
+                noise_pred = model(x, t_rev)
 
                 beta_t = beta[rev_t]
                 alpha_t = alpha[rev_t]
@@ -167,28 +165,26 @@ def gradients_histogram():
     plt.tight_layout()
     plt.show()
 
-class TimeAwareBlock(nn.Module):
-    def set_time(self, t):
-        self.t = t
-
-class Encoder_block(TimeAwareBlock):
-    def __init__(self, input_dim, output_dim, stride=2):
+class Encoder_block(nn.Module):
+    'pad2: Yes or No, specifies wheter to pad to the next power of 2'
+    def __init__(self, input_dim, output_dim, stride=2, pad2='No'):
         super().__init__()
         self.input_dim = input_dim
         self.stride = stride
+        self.pad2 = pad2
         self.encoder = nn.Sequential(
                                      nn.Conv2d(input_dim + output_dim // 2, input_dim, kernel_size=3, padding=1),
-                                     nn.BatchNorm2d(input_dim),
+                                     nn.GroupNorm(num_groups=8, num_channels=input_dim),
                                      nn.SiLU(),
                                      nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=self.stride, padding=1),
-                                     nn.BatchNorm2d(output_dim),
+                                     nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU()
                                      )
         
         self.time_embed = nn.Sequential(
-                                        nn.Linear(1, output_dim // 4),
-                                        nn.ReLU(),
-                                        nn.Linear(output_dim // 4, output_dim // 2)
+                                        nn.Linear(1, output_dim // 2),
+                                        nn.SiLU(),
+                                        nn.Linear(output_dim // 2, output_dim // 2)
                                         )
         
     def padding_2(self, x):
@@ -206,19 +202,19 @@ class Encoder_block(TimeAwareBlock):
             
         return x
     
-    def forward(self, x):
-        if self.input_dim == 1:
+    def forward(self, x, t):
+        if self.pad2 == 'Yes':
             x = self.padding_2(x)
         
         B, _, H, W = x.shape
-        t_proj = self.time_embed(self.t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
+        t_proj = self.time_embed(t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
            
         x = torch.cat([x, t_proj], dim=1)
         x = self.encoder(x)
         
         return x
 
-class Decoder_block(TimeAwareBlock):
+class Decoder_block(nn.Module):
     def __init__(self, input_dim, output_dim, stride=2, padding=1, output_padding=1):
         super().__init__()
         self.padding = padding
@@ -226,56 +222,56 @@ class Decoder_block(TimeAwareBlock):
         self.output_padding = output_padding
         self.decoder = nn.Sequential(
                                      nn.ConvTranspose2d(input_dim + input_dim // 2, input_dim, kernel_size=3, stride=self.stride, padding=self.padding, output_padding=self.output_padding),
-                                     nn.BatchNorm2d(input_dim),
+                                     nn.GroupNorm(num_groups=8, num_channels=input_dim),
                                      nn.SiLU(),
                                      nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1),
-                                     nn.BatchNorm2d(output_dim),
+                                     nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU()
                                      )
         
         self.time_embed = nn.Sequential(
-                                        nn.Linear(1, input_dim // 4),
-                                        nn.ReLU(),
-                                        nn.Linear(input_dim // 4, input_dim // 2)
+                                        nn.Linear(1, input_dim // 2),
+                                        nn.SiLU(),
+                                        nn.Linear(input_dim // 2, input_dim // 2)
                                         )
         
-    def forward(self, x):
+    def forward(self, x, t):
         B, _, H, W = x.shape
-        t_proj = self.time_embed(self.t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
+        t_proj = self.time_embed(t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
         
         x = torch.cat([x, t_proj], dim=1)
         x = self.decoder(x)
         return x
 
-class ResNet_block(TimeAwareBlock):
+class ResNet_block(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
         self.resnet = nn.Sequential(
                                     nn.Conv2d(input_dim + input_dim // 2, input_dim, kernel_size=3, padding=1),
-                                    nn.BatchNorm2d(input_dim),
+                                    nn.GroupNorm(num_groups=8, num_channels=input_dim),
                                     nn.SiLU(),
                                     nn.Conv2d(input_dim, input_dim, kernel_size=3, padding=1),
-                                    nn.BatchNorm2d(input_dim),
+                                    nn.GroupNorm(num_groups=8, num_channels=input_dim),  
                                     nn.SiLU()
                                     )
         
         self.time_embed = nn.Sequential(
-                                        nn.Linear(1, input_dim // 4),
-                                        nn.ReLU(),
-                                        nn.Linear(input_dim // 4, input_dim // 2)
+                                        nn.Linear(1, input_dim // 2),
+                                        nn.SiLU(),
+                                        nn.Linear(input_dim // 2, input_dim // 2)
                                         )
-    def forward(self, x):
+    def forward(self, x, t):
         B, _, H, W = x.shape
-        t_proj = self.time_embed(self.t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
+        t_proj = self.time_embed(t.float()).view(B, -1, 1, 1).expand(-1, -1, H, W)
         
         out = torch.cat([x, t_proj], dim=1)
         
         return x + self.resnet(out)
 
-class Attention_block(TimeAwareBlock):
+class Attention_block(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
-        self.norm = nn.BatchNorm2d(input_dim)
+        self.norm = nn.GroupNorm(num_groups=4, num_channels=input_dim)
         self.Q = nn.Conv2d(input_dim, input_dim, kernel_size=1)
         self.K = nn.Conv2d(input_dim, input_dim, kernel_size=1)
         self.V = nn.Conv2d(input_dim, input_dim, kernel_size=1)
@@ -298,72 +294,71 @@ class Attention_block(TimeAwareBlock):
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.entry = Encoder_block(1, 32, stride=1)
-        self.res1 = ResNet_block(32)
-        self.enc1 = Encoder_block(32, 64)    
-        self.res2 = ResNet_block(64)
-        self.att1 = Attention_block(64)
-        self.enc2 = Encoder_block(64, 64)
-        self.res3 = ResNet_block(64)
-        self.enc3 = Encoder_block(64, 128)
+        self.entry = nn.Sequential(nn.Conv2d(1, 32, kernel_size=3, padding=1), nn.SiLU())
+        self.enc0 = Encoder_block(32, 64, stride=1, pad2='Yes')
+        self.res1 = ResNet_block(64)
+        self.enc1 = Encoder_block(64, 128)    
+        self.res2 = ResNet_block(128)
+        self.att1 = Attention_block(128)
+        self.enc2 = Encoder_block(128, 128)
+        self.res3 = ResNet_block(128)
+        self.enc3 = Encoder_block(128, 256)
         
-        self.res4 = ResNet_block(128)
-        self.att2 = Attention_block(128)
-        self.res5 = ResNet_block(128)
+        self.res4 = ResNet_block(256)
+        self.att2 = Attention_block(256)
+        self.res5 = ResNet_block(256)
         
-        self.dec4 = Decoder_block(128, 64)
-        self.res6 = ResNet_block(64)
-        self.dec3 = Decoder_block(64, 64)
-        self.att3 = Attention_block(64)
-        self.res7 = ResNet_block(64)
-        self.dec2 = Decoder_block(64, 32)
-        self.res8 = ResNet_block(32)
-        self.dec1 = Decoder_block(32, 1, stride=1, padding=3, output_padding=0)
+        self.dec4 = Decoder_block(256, 128)
+        self.res6 = ResNet_block(128)
+        self.dec3 = Decoder_block(128, 128)
+        self.att3 = Attention_block(128)
+        self.res7 = ResNet_block(128)
+        self.dec2 = Decoder_block(128, 64)
+        self.res8 = ResNet_block(64)
+        self.dec1 = Decoder_block(64, 32, stride=1, padding=3, output_padding=0)
+        self.output = nn.Conv2d(32, 1, kernel_size=3, padding=1)
         
         self.apply(self.init_weights)
     
     def init_weights(self, layer):
         if isinstance(layer, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)):
-            init.xavier_uniform_(layer.weight)
-            
-    def set_time(self, t):
-        for module in self.modules():
-            if isinstance(module, TimeAwareBlock):
-                module.set_time(t)
+            init.kaiming_normal_(layer.weight, nonlinearity='relu')
     
-    def forward(self, x):
-        x0 = self.entry(x)
-        x1 = self.res1(x0)
-        x2 = self.enc1(x1)
-        x3 = self.res2(x2)
+    def forward(self, x, t):
+        en = self.entry(x)
+        x0 = self.enc0(en, t)
+        x1 = self.res1(x0, t)
+        x2 = self.enc1(x1, t)
+        x3 = self.res2(x2, t)
         x4 = self.att1(x3)
-        x5 = self.enc2(x4)
-        x6 = self.res3(x5)
-        x7 = self.enc3(x6)
+        x5 = self.enc2(x4, t)
+        x6 = self.res3(x5, t)
+        x7 = self.enc3(x6, t)
         
-        x8 = self.res4(x7)
+        x8 = self.res4(x7, t)
         x9 = self.att2(x8)
-        x10 = self.res5(x9)
+        x10 = self.res5(x9, t)
         
-        x11 = self.dec4(x10) + x6
-        x12 = self.res6(x11) + x5
-        x13 = self.dec3(x12)
+        x11 = self.dec4(x10, t) + x6
+        x12 = self.res6(x11, t) + x5
+        x13 = self.dec3(x12, t)
         x14 = self.att3(x13)
-        x15 = self.res7(x14)
-        x16 = self.dec2(x15)
-        x17 = self.res8(x16) + x1
-        x18 = self.dec1(x17)
-
-        return x18
-
+        x15 = self.res7(x14, t)
+        x16 = self.dec2(x15, t)
+        x17 = self.res8(x16, t) + x1
+        x18 = self.dec1(x17, t)
+        out = self.output(x18)
+        
+        return out
+    
 # --- Hyperparameters ---
 T = 500
-beta_start = 8e-4
-beta_end = 1e-3
+beta_start = 5e-4
+beta_end = 5e-2
 image_size = 28
 batch_size = 200
-learning_rate = 4e-2
-epochs = 5001
+learning_rate = 1e-3
+epochs = 5000
 num_samples = 1
 losses = []
 
@@ -392,7 +387,9 @@ plt.show()
 # --- Model init ---
 model = Net().to(device)
 optimizer = optim.Adam(model.parameters(), learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 500, gamma = 0.4)
+
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 200, gamma = 0.1)
 loss_fn = nn.MSELoss() 
 
 # --- Main loop ---
@@ -404,24 +401,31 @@ for epoch in range(epochs):
         batch_size_actual = batch.shape[0]
         t = torch.randint(0, T, (batch_size_actual, 1), device=device)
         t = t // (T - 1)
-        model.set_time(t)
         xt, noise = forward_diffusion(batch, t)
+        noise_pred = model(xt, t)
         
-        noise_pred = model(xt)
+        # t_float = t.float()
+        # t_float.requires_grad_()
+        # noise_pred = model(xt, t_float)
+        # noise_pred.mean().backward()
+        # print(t_float.grad)
+        
         loss = loss_fn(noise, noise_pred)
         loss_c += loss
 
         optimizer.zero_grad()
         loss.backward()
         
-        # Optional: log pre-clipping norm
-        total_norm = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
-        
+        # # Vanishing gradient control
+        # for name, param in model.named_parameters():
+        #     if param.grad is not None:
+        #         print(f"{name}: grad std = {param.grad.std().item():.2e}")
+        mean = noise_pred.mean().item()
+        std = noise_pred.std().item()
+        print(f"mean noise_pred: {mean:.6f}")
+        print(f"std noise_pred: {std:.6f}")
+
+
         # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
@@ -432,10 +436,16 @@ for epoch in range(epochs):
     losses.append(loss_c.item())
     print(f"Epoch {epoch+1}: Loss = {loss_c.item():.6f}, Learning Rate = {current_lr:.6e}")
     if (epoch + 1) % 10 == 0:
-
+        # Optional: log pre-clipping norm
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
         print(f"Pre-clip grad norm: {total_norm:.4f}")
         
-    if (epoch + 1) % 100 == 0:
+    if (epoch + 1) % 200 == 0:
         # ew_images(model)
         model.eval()       
         test_noise()
