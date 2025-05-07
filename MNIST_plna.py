@@ -12,6 +12,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
+from torchvision.datasets import MNIST
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # --- GPU check ---
@@ -86,8 +87,17 @@ def new_images(model):
                 
             # Reverse diffusion step
             x = (1 / torch.sqrt(alpha_t)) * (x - (beta_t * noise_pred / torch.sqrt(1 - alpha_c))) + noise * torch.sqrt(beta_t)
+            
+    imgs = x.squeeze().cpu().numpy()
+    
+    fig, axes = plt.subplots(6, 6, figsize=(8, 8))
+    for i, ax in enumerate(axes.flatten()):
+        ax.imshow(imgs[i], cmap='gray')
+        ax.axis('off')
+    plt.tight_layout()
+    plt.show()
 
-    return x.cpu()
+    return
 
 # --- Model performance test for different noise levels ---
 def test_noise(num_samples=1, image_path='dataset_ones/1.png'):
@@ -173,18 +183,18 @@ class Encoder_block(nn.Module):
         self.stride = stride
         self.pad2 = pad2
         self.encoder = nn.Sequential(
-                                     nn.Conv2d(input_dim + output_dim // 2, input_dim, kernel_size=3, padding=1),
-                                     nn.GroupNorm(num_groups=8, num_channels=input_dim),
+                                     nn.Conv2d(input_dim + input_dim, output_dim, kernel_size=3, padding=1),
+                                     nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU(),
-                                     nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=self.stride, padding=1),
+                                     nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=self.stride, padding=1),
                                      nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU()
                                      )
         
         self.time_embed = nn.Sequential(
-                                        nn.Linear(1, output_dim // 2),
+                                        nn.Linear(1, input_dim // 2),
                                         nn.SiLU(),
-                                        nn.Linear(output_dim // 2, output_dim // 2)
+                                        nn.Linear(input_dim // 2, input_dim)
                                         )
         
     def padding_2(self, x):
@@ -221,10 +231,10 @@ class Decoder_block(nn.Module):
         self.stride = stride
         self.output_padding = output_padding
         self.decoder = nn.Sequential(
-                                     nn.ConvTranspose2d(input_dim + input_dim // 2, input_dim, kernel_size=3, stride=self.stride, padding=self.padding, output_padding=self.output_padding),
-                                     nn.GroupNorm(num_groups=8, num_channels=input_dim),
+                                     nn.ConvTranspose2d(input_dim + input_dim, output_dim, kernel_size=3, stride=self.stride, padding=self.padding, output_padding=self.output_padding),
+                                     nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU(),
-                                     nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1),
+                                     nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1),
                                      nn.GroupNorm(num_groups=8, num_channels=output_dim),
                                      nn.SiLU()
                                      )
@@ -232,7 +242,7 @@ class Decoder_block(nn.Module):
         self.time_embed = nn.Sequential(
                                         nn.Linear(1, input_dim // 2),
                                         nn.SiLU(),
-                                        nn.Linear(input_dim // 2, input_dim // 2)
+                                        nn.Linear(input_dim // 2, input_dim)
                                         )
         
     def forward(self, x, t):
@@ -300,17 +310,17 @@ class Net(nn.Module):
         self.enc1 = Encoder_block(64, 128)    
         self.res2 = ResNet_block(128)
         self.att1 = Attention_block(128)
-        self.enc2 = Encoder_block(128, 128)
-        self.res3 = ResNet_block(128)
-        self.enc3 = Encoder_block(128, 256)
+        self.enc2 = Encoder_block(128, 256)
+        self.res3 = ResNet_block(256)
+        self.enc3 = Encoder_block(256, 512)
         
-        self.res4 = ResNet_block(256)
-        self.att2 = Attention_block(256)
-        self.res5 = ResNet_block(256)
+        self.res4 = ResNet_block(512)
+        self.att2 = Attention_block(512)
+        self.res5 = ResNet_block(512)
         
-        self.dec4 = Decoder_block(256, 128)
-        self.res6 = ResNet_block(128)
-        self.dec3 = Decoder_block(128, 128)
+        self.dec4 = Decoder_block(512, 256)
+        self.res6 = ResNet_block(256)
+        self.dec3 = Decoder_block(256, 128)
         self.att3 = Attention_block(128)
         self.res7 = ResNet_block(128)
         self.dec2 = Decoder_block(128, 64)
@@ -352,14 +362,14 @@ class Net(nn.Module):
         return out
     
 # --- Hyperparameters ---
-T = 500
-beta_start = 5e-4
-beta_end = 5e-2
+T = 200
+beta_start = 1e-4
+beta_end = 2e-2
 image_size = 28
-batch_size = 200
-learning_rate = 1e-3
-epochs = 5000
-num_samples = 1
+batch_size = 128
+learning_rate = 5e-4
+epochs = 1000
+num_samples = 36
 losses = []
 
 # --- Define noise-adding ---
@@ -367,36 +377,38 @@ beta = torch.linspace(beta_start, beta_end, T).to(device)   # Increasing coeffic
 alpha = 1 - beta                                            # Proportion of original image
 alpha_cumulative = torch.cumprod(alpha, dim=0)              # Cumulative proportion of orig image
 
-# --- Import dataset as list of arrays ---
-dataset, image_tensor = images_to_list('dataset_ones')
-data_loaded = DataLoader(dataset, batch_size, shuffle=True)
+transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5), (0.5))])
+mnist_dataset = MNIST(root='./data', train=True, download=True, transform=transform)
+mnist_loader = DataLoader(mnist_dataset, batch_size=batch_size, shuffle=True)
 
-# --- Diffusion test loop ---
-sample = image_tensor[0].unsqueeze(0).to(device)
-fig, axes = plt.subplots(1, 10, figsize=(6, 15))
-for i in range(10): 
-     sample_diff, noise = forward_diffusion(sample, (((i + 1) * T - 1) // 10))
-     sample_diff = sample_diff.squeeze().cpu().numpy()
-     ax = axes[i]
-     ax.imshow(sample_diff, cmap='gray')
-     ax.axis('off')
-# Adjust layout to avoid overlap
-plt.tight_layout()
-plt.show() 
+# dataset, image_tensor = images_to_list('dataset_ones')
+# data_loaded = DataLoader(dataset, batch_size, shuffle=True)
+
+# # --- Diffusion test loop ---
+# sample = image_tensor[0].unsqueeze(0).to(device)
+# fig, axes = plt.subplots(1, 10, figsize=(6, 15))
+# for i in range(10): 
+#      sample_diff, noise = forward_diffusion(sample, (((i + 1) * T - 1) // 10))
+#      sample_diff = sample_diff.squeeze().cpu().numpy()
+#      ax = axes[i]
+#      ax.imshow(sample_diff, cmap='gray')
+#      ax.axis('off')
+# # Adjust layout to avoid overlap
+# plt.tight_layout()
+# plt.show() 
 
 # --- Model init ---
 model = Net().to(device)
-optimizer = optim.Adam(model.parameters(), learning_rate)
+optimizer = optim.AdamW(model.parameters(), learning_rate)
 
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs*100, eta_min=5e-6)
 # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 200, gamma = 0.1)
 loss_fn = nn.MSELoss() 
 
 # --- Main loop ---
 for epoch in range(epochs):
-    loss_c = 0
     
-    for batch in data_loaded:
+    for batch in mnist_loader:
         batch = batch[0].to(device)
         batch_size_actual = batch.shape[0]
         t = torch.randint(0, T, (batch_size_actual, 1), device=device)
@@ -411,7 +423,10 @@ for epoch in range(epochs):
         # print(t_float.grad)
         
         loss = loss_fn(noise, noise_pred)
-        loss_c += loss
+        # current_lr = scheduler.get_last_lr()[0]
+        # LR: {current_lr}
+        print(f"Loss: {loss},")
+        losses.append(loss.item())
 
         optimizer.zero_grad()
         loss.backward()
@@ -420,36 +435,16 @@ for epoch in range(epochs):
         # for name, param in model.named_parameters():
         #     if param.grad is not None:
         #         print(f"{name}: grad std = {param.grad.std().item():.2e}")
-        mean = noise_pred.mean().item()
-        std = noise_pred.std().item()
-        print(f"mean noise_pred: {mean:.6f}")
-        print(f"std noise_pred: {std:.6f}")
+        # mean = noise_pred.mean().item()
+        # std = noise_pred.std().item()
+        # print(f"mean noise_pred: {mean:.6f}")
+        # print(f"std noise_pred: {std:.6f}")
 
-
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        scheduler.step()
 
-    scheduler.step()
-    current_lr = scheduler.get_last_lr()[0]
-    
-    loss_c /= (200 / batch_size)
-    losses.append(loss_c.item())
-    print(f"Epoch {epoch+1}: Loss = {loss_c.item():.6f}, Learning Rate = {current_lr:.6e}")
-    if (epoch + 1) % 10 == 0:
-        # Optional: log pre-clipping norm
-        total_norm = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
-        print(f"Pre-clip grad norm: {total_norm:.4f}")
-        
-    if (epoch + 1) % 200 == 0:
-        # ew_images(model)
-        model.eval()       
-        test_noise()
-        model.train()
+    # if (epoch + 1) % 500 == 0:
+    new_images(model)
         # gradients_histogram()
 
 torch.save(model.state_dict(), "diffusion_model.pth")
